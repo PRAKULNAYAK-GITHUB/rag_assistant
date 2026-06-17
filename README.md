@@ -1,6 +1,6 @@
 # LangChain RAG Explorer
 
-This is a local exploratory RAG application using the stack you selected:
+This is a local exploratory RAG application designed for flexible document indexing and retrieval using a modern Python stack:
 
 ```txt
 langchain
@@ -15,9 +15,10 @@ python-dotenv
 watchdog
 pandas
 httpx
+openai
 ```
 
-Qdrant is the vector database. FastEmbed creates embeddings locally. Your already-installed local Ollama is used for answer generation.
+Qdrant is the vector database. FastEmbed creates embeddings locally. For answer generation, you can configure and select your preferred LLM provider (local Ollama, OpenAI, Groq, or Google Gemini) dynamically via the interface or `.env` configuration.
 
 ## Architecture
 
@@ -40,11 +41,11 @@ Qdrant
 TinyDB
   -> local document metadata, sessions, chat messages
 
-Ollama
-  -> local offline LLM generation
+LLM Providers
+  -> Flexible API/local integration supporting Ollama, OpenAI, Groq, or Google Gemini
 
-httpx
-  -> local HTTP call to Ollama
+httpx / openai
+  -> API client and HTTP streaming connections to the selected LLM provider
 ```
 
 ## Flow
@@ -58,7 +59,7 @@ Upload PDF/TXT/MD
   -> user asks question
   -> FastEmbed embeds question
   -> Qdrant retrieves relevant chunks
-  -> Ollama generates answer locally
+  -> Selected LLM provider generates grounded answer
   -> Streamlit displays answer + citations
 ```
 
@@ -69,6 +70,8 @@ Create `.env`:
 ```powershell
 copy .env.example .env
 ```
+
+Open `.env` and choose your preferred `LLM_PROVIDER` (e.g., `ollama`, `openai`, `groq`, or `gemini`) and fill in the corresponding API key(s) or model settings.
 
 Install dependencies:
 
@@ -120,5 +123,6 @@ streamlit run app.py
 
 - Qdrant must be running in Docker before indexing documents.
 - FastEmbed may download its embedding model the first time it is used unless already cached.
-- Ollama is contacted only through your local Windows server at `OLLAMA_BASE_URL`.
+- Ollama is contacted through your local Windows server at `OLLAMA_BASE_URL`.
+- OpenAI, Groq, and Gemini APIs are called securely with credentials stored only in your `.env` configuration.
 - Scanned PDFs need OCR before upload because `pypdf` extracts embedded text, not images.
