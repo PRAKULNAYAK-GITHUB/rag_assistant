@@ -15,7 +15,22 @@ from rag_core.store import (
     set_active_session,
 )
 
+# ---------------------------------------------------------------------------
+# Provider options — label shown in UI maps to internal provider key
+# ---------------------------------------------------------------------------
+PROVIDER_OPTIONS = {
+    "Local Ollama (offline)": "ollama",
+    "OpenAI": "openai",
+    "Groq": "groq",
+    "Google Gemini": "gemini",
+}
 
+# Reverse map: internal key → display label (used to pre-select from .env)
+_KEY_TO_LABEL = {v: k for k, v in PROVIDER_OPTIONS.items()}
+
+# ---------------------------------------------------------------------------
+# Page config & CSS  (original, unchanged)
+# ---------------------------------------------------------------------------
 st.set_page_config(page_title="LangChain RAG Explorer", layout="wide")
 
 st.markdown(
@@ -33,15 +48,47 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ---------------------------------------------------------------------------
+# Session init
+# ---------------------------------------------------------------------------
 if "session_id" not in st.session_state:
     st.session_state.session_id = get_or_create_default_session()
 
+if "selected_msg_id" not in st.session_state:
+    st.session_state.selected_msg_id = None
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 with st.sidebar:
     st.title("RAG Explorer")
-    st.caption("LangChain + FastEmbed + Qdrant + Ollama")
+    st.caption("LangChain + FastEmbed + Qdrant")
 
+    # ── LLM provider selector (UI only — keys come from .env) ─────────────
+    st.subheader("LLM Provider")
+
+    default_label = _KEY_TO_LABEL.get(settings.llm_provider, "Local Ollama (offline)")
+    selected_label = st.selectbox(
+        "Choose LLM",
+        list(PROVIDER_OPTIONS.keys()),
+        index=list(PROVIDER_OPTIONS.keys()).index(default_label),
+        key="provider_select",
+        label_visibility="collapsed",
+    )
+    selected_provider = PROVIDER_OPTIONS[selected_label]
+
+    # Show a small hint depending on provider
+    if selected_provider == "ollama":
+        st.caption("🟢 Local model — no API key needed.")
+    else:
+        st.caption("🔑 API key is read from your `.env` file.")
+
+    st.divider()
+
+    # ── Chat sessions ──────────────────────────────────────────────────────
     if st.button("New chat", type="primary", use_container_width=True):
         st.session_state.session_id = create_session()
+        st.session_state.selected_msg_id = None
         st.rerun()
 
     st.divider()
@@ -51,9 +98,12 @@ with st.sidebar:
         if st.button(label, key=f"session-{session['id']}", use_container_width=True):
             set_active_session(session["id"])
             st.session_state.session_id = session["id"]
+            st.session_state.selected_msg_id = None
             st.rerun()
 
     st.divider()
+
+    # ── Document management ────────────────────────────────────────────────
     st.subheader("Documents")
     uploads = st.file_uploader(
         "Upload PDF, TXT, or Markdown",
@@ -73,7 +123,11 @@ with st.sidebar:
     if unindexed_uploads:
         st.warning(f"{len(unindexed_uploads)} uploaded file(s) are saved but not indexed.")
         for path in unindexed_uploads:
-            if st.button(f"Index saved: {path.name[37:] if len(path.name) > 37 else path.name}", key=f"saved-{path.name}", use_container_width=True):
+            if st.button(
+                f"Index saved: {path.name[37:] if len(path.name) > 37 else path.name}",
+                key=f"saved-{path.name}",
+                use_container_width=True,
+            ):
                 with st.spinner("Indexing saved upload into Qdrant..."):
                     index_saved_upload(path)
                 st.rerun()
@@ -98,9 +152,12 @@ with st.sidebar:
             delete_document(doc["id"])
             st.rerun()
 
+# ---------------------------------------------------------------------------
+# Main area — header
+# ---------------------------------------------------------------------------
 st.title("LangChain RAG Explorer")
 st.caption(
-    f"Embeddings: {settings.fastembed_model} | Vector DB: Qdrant | LLM: local Ollama {settings.ollama_chat_model}"
+    f"Embeddings: {settings.fastembed_model} | Vector DB: Qdrant | LLM: {selected_label}"
 )
 
 documents = list_documents()
@@ -122,6 +179,9 @@ with st.expander("Document inventory", expanded=False):
     else:
         st.info("No indexed documents yet. Upload files in the sidebar, then click 'Index selected file(s)'.")
 
+# ---------------------------------------------------------------------------
+# Ask form
+# ---------------------------------------------------------------------------
 st.subheader("Chat")
 if not documents:
     st.info("Index at least one document to start asking grounded questions.")
@@ -149,9 +209,11 @@ if submitted and question.strip():
             st.write(f"Retrieved {len(hits)} chunk(s).")
             st.write("Building grounded prompt...")
             prompt = build_grounded_prompt(question, hits, get_messages(st.session_state.session_id))
-            st.write(f"Streaming answer from local Ollama model `{settings.ollama_chat_model}`...")
+            st.write(f"Streaming answer from {selected_label}...")
             with st.chat_message("assistant"):
-                answer = st.write_stream(generate_answer_stream(prompt))
+                answer = st.write_stream(
+                    generate_answer_stream(prompt, provider=selected_provider)
+                )
             citations = build_citations(hits)
             add_message(st.session_state.session_id, "assistant", answer, citations)
             status.update(label="Answer ready", state="complete")
@@ -164,11 +226,36 @@ if submitted and question.strip():
         st.error(error_message)
     st.rerun()
 
+# ---------------------------------------------------------------------------
+# Chat history — clicking "Show sources" reveals citations for that message
+# ---------------------------------------------------------------------------
 messages = get_messages(st.session_state.session_id)
 if messages:
     for row in messages:
         with st.chat_message(row["role"]):
             st.markdown(row["content"])
+
+            # Per-message citation toggle for assistant messages
+            if row["role"] == "assistant" and row.get("citations"):
+                msg_id = row["id"]
+                is_open = st.session_state.selected_msg_id == msg_id
+                btn_label = "▼ Hide sources" if is_open else "▶ Show sources"
+                if st.button(btn_label, key=f"toggle-cit-{msg_id}", use_container_width=False):
+                    st.session_state.selected_msg_id = None if is_open else msg_id
+                    st.rerun()
+
+                if is_open:
+                    for citation in row["citations"]:
+                        page = f", page {citation['page']}" if citation.get("page") else ""
+                        st.markdown(
+                            f"""
+                            <div class="source-box">
+                              <strong>{citation['filename']}{page}</strong>
+                              <p>{citation['snippet']}</p>
+                            </div>
+                            """,
+                            unsafe_allow_html=True,
+                        )
 else:
     st.markdown(
         """
@@ -179,6 +266,9 @@ else:
         unsafe_allow_html=True,
     )
 
+# ---------------------------------------------------------------------------
+# Sources panel — always shows citations for the latest assistant answer
+# ---------------------------------------------------------------------------
 last_answer = next((row for row in reversed(messages) if row["role"] == "assistant"), None)
 if last_answer and last_answer.get("citations"):
     st.subheader("Sources")
